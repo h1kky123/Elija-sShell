@@ -62,68 +62,41 @@ void check_boot_signature(const char *device) {
 }
 
 
-// --- VFS для задач cron ---
-
-// Атрибуты файловой системы
-static int vfs_getattr(const char *path, struct stat *stbuf) {
+//О
+// VFS операции для cron
+static int vfs_getattr(const char* path, struct stat* stbuf) {
     memset(stbuf, 0, sizeof(struct stat));
-    if (strcmp(path, "/") == 0) {
-        stbuf->st_mode = S_IFDIR | 0755;
-        stbuf->st_nlink = 2;
-    } else if (strcmp(path, "/tasks") == 0) {
-        stbuf->st_mode = S_IFREG | 0444;
-        stbuf->st_nlink = 1;
-        stbuf->st_size = 1024; // Примерный размер содержимого
-    } else {
-        return -ENOENT;
-    }
+    if (strcmp(path, "/") == 0) { stbuf->st_mode = S_IFDIR | 0755; stbuf->st_nlink = 2; }
+    else if (strcmp(path, "/tasks") == 0) { stbuf->st_mode = S_IFREG | 0444; stbuf->st_nlink = 1; stbuf->st_size = 1024; }
+    else return -ENOENT;
     return 0;
 }
 
-// Чтение содержимого директории
-static int vfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
-    if (strcmp(path, "/") != 0)
-        return -ENOENT;
-
-    filler(buf, ".", NULL, 0);
-    filler(buf, "..", NULL, 0);
-    filler(buf, "tasks", NULL, 0);
-
+static int vfs_readdir(const char* path, void* buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info* fi) {
+    if (strcmp(path, "/") != 0) return -ENOENT;
+    filler(buf, ".", NULL, 0); filler(buf, "..", NULL, 0); filler(buf, "tasks", NULL, 0);
     return 0;
 }
 
-// Открытие файла
-static int vfs_open(const char *path, struct fuse_file_info *fi) {
-    if (strcmp(path, "/tasks") != 0)
-        return -ENOENT;
-
+static int vfs_open(const char* path, struct fuse_file_info* fi) {
+    if (strcmp(path, "/tasks") != 0) return -ENOENT;
     return 0;
+    //А
 }
 
-// Чтение файла
-static int vfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
-    if (strcmp(path, "/tasks") != 0)
-        return -ENOENT;
-
-    FILE *cron = popen("crontab -l", "r");
-    if (!cron)
-        return -EIO;
-
+static int vfs_read(const char* path, char* buf, size_t size, off_t offset, struct fuse_file_info* fi) {
+    if (strcmp(path, "/tasks") != 0) return -ENOENT;
+    FILE* cron = popen("crontab -l", "r");
+    if (!cron) return -EIO;
     char tasks[1024];
     size_t len = fread(tasks, 1, sizeof(tasks), cron);
     pclose(cron);
-
-    if (offset >= len)
-        return 0;
-
-    if (offset + size > len)
-        size = len - offset;
-
+    if (offset >= len) return 0;
+    if (offset + size > len) size = len - offset;
     memcpy(buf, tasks + offset, size);
     return size;
 }
 
-// Операции для FUSE
 static struct fuse_operations vfs_ops = {
     .getattr = vfs_getattr,
     .readdir = vfs_readdir,
@@ -131,58 +104,22 @@ static struct fuse_operations vfs_ops = {
     .read = vfs_read,
 };
 
-// Удаление содержимого директории
-void clear_directory(const char *path) {
-    DIR *dir = opendir(path);
-    if (!dir) return;
-
-    struct dirent *entry;
-    char filepath[1024];
-    while ((entry = readdir(dir)) != NULL) {
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
-        snprintf(filepath, sizeof(filepath), "%s/%s", path, entry->d_name);
-        remove(filepath);
-    }
-    closedir(dir);
-}
-
-// Монтирование VFS
+// Монтирование VFS для cron
 void mount_vfs_cron() {
     if (mkdir("/tmp/vfs", 0755) == -1 && errno != EEXIST) {
-        perror("Ошибка при создании директории /tmp/vfs");
-        return;
+        perror("Ошибка создания /tmp/vfs"); return;
     }
-
-    clear_directory("/tmp/vfs");
-
     pid_t pid = fork();
     if (pid == 0) {
-        // Демонизируем процесс, чтобы не блокировать шелл
-        if (setsid() < 0) {
-            perror("Ошибка при создании новой сессии");
-            exit(EXIT_FAILURE);
-        }
-
-        // Перенаправляем стандартные файловые дескрипторы в /dev/null, чтобы избежать помех с шеллом
-        close(STDIN_FILENO);
-        close(STDOUT_FILENO);
-        close(STDERR_FILENO);
-        open("/dev/null", O_RDONLY);
-        open("/dev/null", O_WRONLY);
-        open("/dev/null", O_WRONLY);
-
-        // Запускаем FUSE
-        char *argv[] = {"vfs_cron", "/tmp/vfs", "-f", "-o", "nonempty", NULL};
-        if (fuse_main(5, argv, &vfs_ops, NULL) == -1) {
-            perror("Ошибка при монтировании FUSE");
-            exit(EXIT_FAILURE);
-        }
+        if (setsid() < 0) { perror("Ошибка setsid"); exit(EXIT_FAILURE); }
+        close(STDIN_FILENO); close(STDOUT_FILENO); close(STDERR_FILENO);
+        open("/dev/null", O_RDONLY); open("/dev/null", O_WRONLY); open("/dev/null", O_WRONLY);
+        char* argv[] = { "vfs_cron", "/tmp/vfs", "-f", "-o", "nonempty", NULL };
+        if (fuse_main(5, argv, &vfs_ops, NULL) == -1) { perror("Ошибка FUSE"); exit(EXIT_FAILURE); }
         exit(0);
-    } else if (pid < 0) {
-        perror("Ошибка при запуске FUSE");
-    } else {
-        printf("VFS успешно смонтирован в /tmp/vfs. Список задач cron доступен.\n");
     }
+    else if (pid < 0) { perror("Ошибка fork"); }
+    else { printf("VFS смонтирован в /tmp/vfs. Список задач cron доступен.\n"); }
 }
 
 
